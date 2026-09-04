@@ -272,6 +272,10 @@ Auto Aim Result
 
 视频记录了装甲板检测、目标选择、位姿解算以及目标状态变化的完整过程。
 
+由于ubuntu好像不支持直接播放 mp4 格式的视频所以根据 gpt 的推荐，保存为 avi 格式。也可以将 mp4 下载到本地看。
+
+[`output/result.mp4`](output/result.mp4)
+
 ---
 
 ## 6. 当前效果与不足
