@@ -70,3 +70,5 @@ Testing/
 
 output/*.mp4
 *.avi
+
+output/
