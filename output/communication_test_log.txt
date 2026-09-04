@@ -1,0 +1,11 @@
+CAN ID: 0x301
+TX Data: A7 01 63 FF 58 02 02 66 
+RX yaw: 4.23 deg
+RX pitch: -1.57 deg
+RX distance: 600.00 mm
+RX status: 2
+Checksum: OK
+
+--- Corrupted Frame Test ---
+Corrupted Data: A6 01 63 FF 58 02 02 66 
+Checksum: ERROR

@@ -7,13 +7,15 @@
 #include "armor_detector.hpp"
 #include "config.hpp"
 
+#include <cstdint>
 
-enum class TargetStatus
+
+enum class TargetStatus : uint8_t
 {
-    NO_TARGET,
-    DETECTED,
-    TRACKING,
-    TEMP_LOST
+    NO_TARGET = 0,
+    DETECTED = 1,
+    TRACKING = 2,
+    TEMP_LOST = 3
 };
 
 
