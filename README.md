@@ -262,7 +262,7 @@ Auto Aim Result
 
 ### 运行截图
 
-![运行效果](docs/result.png)
+![运行效果](output/result.png)
 
 ### 运行视频
 
