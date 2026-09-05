@@ -272,7 +272,9 @@ Auto Aim Result
 
 视频记录了装甲板检测、目标选择、位姿解算以及目标状态变化的完整过程。
 
-由于ubuntu好像不支持直接播放 mp4 格式的视频所以根据 gpt 的推荐，保存为 avi 格式。也可以将 mp4 下载到本地看。
+由于ubuntu好像不支持直接播放 mp4 格式的视频所以根据 gpt 的推荐，保存为 avi 格式。
+
+也可以将以下 mp4 下载到本地看效果：
 
 [`output/result.mp4`](output/result.mp4)
 
@@ -479,6 +481,8 @@ RX: A7 01 63 FF 58 02 02 66 | Yaw: 4.23 deg, Pitch: -1.57 deg, Distance: 600.00 
 
 ![阶段二通信运行结果](output/stage2_udp_result.png)
 
+也可以将以下视频下载到本地观看：
+
 [`output/stage2_udp_result1.mp4`](output/stage2_udp_result1.mp4)
 
 运行过程中，视觉端可以正常识别和跟踪装甲板，UDP 接收端能够持续收到对应的 8 字节数据。解码得到的 yaw、pitch、distance 和目标状态会随视觉检测结果变化，正常情况下 checksum 显示为 `OK`。
@@ -503,7 +507,7 @@ RX: A7 01 63 FF 58 02 02 66 | Yaw: 4.23 deg, Pitch: -1.57 deg, Distance: 600.00 
 
 #### 1. OpenCV 环境配置
 
-一开始尝试在 Windows 下使用 MSYS2 配置 OpenCV ，然后遇到了 CMake 查找和链接方面的问题。后面还是将项目放到 Ubuntu 22.04 下重新配置，使用系统安装的 OpenCV 。
+一开始尝试在 Windows 下使用 MSYS2 配置 C++/OpenCV ，然后遇到了 CMake 查找和链接方面的问题。后面还是将项目放到 Ubuntu 22.04 下重新配置，使用系统安装的 OpenCV 。
 
 #### 2. 灯条筛选参数需要根据实际视频调整
 
