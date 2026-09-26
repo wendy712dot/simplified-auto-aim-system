@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(rm_interfaces REQUIRED)
 find_package(OpenCV REQUIRED)
 
 add_executable(
@@ -34,8 +35,21 @@ target_link_libraries(
   ${OpenCV_LIBS}
 )
 
+add_executable(
+  gimbal_command_test
+  src/gimbal_command_test.cpp
+)
+
+ament_target_dependencies(
+  gimbal_command_test
+  rclcpp
+  rm_interfaces
+)
+
 install(
-  TARGETS image_subscriber_test
+  TARGETS
+  image_subscriber_test
+  gimbal_command_test
   DESTINATION lib/${PROJECT_NAME}
 )
 
