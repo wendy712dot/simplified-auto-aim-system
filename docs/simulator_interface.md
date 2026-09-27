@@ -29,7 +29,8 @@ HNUYueLuRM/bevy_robomaster_simulator
 
 ```text
 fix/ros2-interface-compatibility
-38228c7
+38228c7  Fix ROS2 interface compatibility
+7c07570  Fix controlled robot color feedback
 ```
 
 原自瞄项目开发分支：
@@ -62,13 +63,7 @@ cargo run --release --no-default-features --features ros2
 /robomaster/simulator
 ```
 
-建议截图：
-
-```markdown
 ![仿真器ROS2运行及话题列表](images/simulator_ros2_topics.png)
-```
-
-截图中保留仿真窗口以及 `ros2 node list`、`ros2 topic list` 的关键输出即可。
 
 ---
 
@@ -236,13 +231,7 @@ ros2 run auto_aim_ros2 image_subscriber_test
 
 已经连通。
 
-建议截图：
-
-```markdown
 ![图像订阅测试](images/image_subscriber_test.png)
-```
-
-截图中同时保留 OpenCV 画面和终端 FPS。
 
 ### 5.2 云台命令测试
 
@@ -277,41 +266,75 @@ C++程序 → ROS2 → 仿真器云台
 
 已经连通。
 
-建议截图：
-
-```markdown
 ![云台命令测试](images/gimbal_command_test.png)
-```
-
-截图中保留命令参数、仿真画面和角度反馈即可。
 
 ---
 
-## 6. 数据流
+## 6. 实时识别与最小闭环
+
+节点复用原项目的装甲检测、目标选择和 PnP 模块。默认只进行开环识别：
+
+```bash
+ros2 run auto_aim_ros2 auto_aim_open_loop
+```
+
+显式开启闭环，并将单次角度修正限制为 1°：
+
+```bash
+ros2 run auto_aim_ros2 auto_aim_open_loop --ros-args \
+  -p enable_control:=true \
+  -p max_correction_deg:=1.0
+```
+
+识别算法输出相对画面中心的角度误差，结合
+`/vision_receive_data` 中的当前姿态转换为绝对目标角度：
+
+```text
+目标绝对角度 = 当前云台角度 - 图像角度误差
+```
+
+安全机制：
+
+- 控制默认关闭，必须通过参数显式开启。
+- 目标进入 `TRACKING` 且 PnP 成功后才发送有效命令。
+- 单次角度修正默认不超过 2°，测试时限制为 1°。
+- 误差小于 0.15° 时不修正，减少中心附近抖动。
+- 控制命令约以 17～20 Hz 发布。
+- 目标丢失时发送 `target_state=0`、`target_distance=-1`，并保持当前姿态。
+- 当前阶段只瞄准，不发送开火指令。
+
+实测闭环能够将目标收敛至画面中心，稳定后角度误差约为 0.01°；
+目标移出画面后，无效目标保护正常触发。
+
+![最小闭环跟踪结果](images/closed_loop_tracking.png)
+
+已知问题：相邻装甲板的内侧灯条偶尔会组成错误候选，上方连续灯条也可能
+产生额外候选。目前最终目标选择基本稳定，不影响最小闭环验证；后续可通过
+数字区域分类和更严格的候选匹配继续优化。
+
+---
+
+## 7. 数据流
 
 ```text
 仿真虚拟相机
     ↓ /image_raw
 图像订阅程序
     ↓ cv::Mat
-后续自瞄算法
-    ↓ AimResult
-云台输出程序
+装甲检测 → 目标选择 → PnP
+    ↓ yaw / pitch / distance
+安全限幅与绝对角度转换
     ↓ /vision_send_data
 仿真云台运动
     ↓
 产生新的相机画面
 ```
 
-后续形成完整系统图后，可在这里增加一张数据流图：
-
-```markdown
 ![系统数据流](images/system_data_flow.png)
-```
 
 ---
 
-## 7. 主要问题与解决方法
+## 8. 主要问题与解决方法
 
 | 问题 | 解决方法 |
 |---|---|
@@ -321,10 +344,12 @@ C++程序 → ROS2 → 仿真器云台
 | 方向键不能手动控制云台 | 将 `auto-aim` 切换为 OFF |
 | ROS2 feature 无法编译 | 修正消息包名称、消息类型及字段 |
 | `/gimbal_pose` 等始终为零 | 使用 `/tf` 或 `/vision_receive_data` |
+| `self_color` 与受控机器人不一致 | 将红方受控机器人反馈修正为 `self_color=0` |
+| 相邻装甲偶尔交叉配对 | 暂由目标选择抑制，后续增加数字分类与匹配约束 |
 
 ---
 
-## 8. 当前结论
+## 9. 当前结论
 
 目前已经完成：
 
@@ -334,19 +359,10 @@ C++程序 → ROS2 → 仿真器云台
 → 接口确认
 → 图像订阅测试
 → 云台命令发布测试
+→ 原算法实时开环识别
+→ 安全限幅云台闭环
+→ 目标丢失保护
 ```
 
-图像输入和云台输出两条通信链路均已打通。
-
-下一阶段将完成：
-
-```text
-ROS2 Image
-→ cv::Mat
-→ 原装甲板检测
-→ 目标选择
-→ PnP
-→ yaw / pitch / distance / target_valid
-```
-
-下一阶段先保持开环，只运行实时视觉算法，不立即使用检测结果控制云台。
+原视频输入模式回归测试正常，ROS2 仿真模式已完成从图像输入、目标识别、
+位姿解算到云台控制的最小闭环。
