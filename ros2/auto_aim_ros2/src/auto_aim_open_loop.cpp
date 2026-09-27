@@ -60,6 +60,8 @@ public:
             declare_parameter<double>("control_deadband_deg", 0.15);
         command_period_ms_ =
             declare_parameter<int>("command_period_ms", 50);
+        image_timeout_ms_ =
+            declare_parameter<int>("image_timeout_ms", 200);
 
         rclcpp::QoS qos(rclcpp::KeepLast(1));
         qos.reliable();
@@ -88,6 +90,12 @@ public:
             create_publisher<rm_interfaces::msg::VisionSendData>(
                 "/vision_send_data",
                 rclcpp::SensorDataQoS().keep_last(1));
+
+        image_watchdog_timer_ = create_wall_timer(
+            std::chrono::milliseconds(50),
+            std::bind(
+                &AutoAimOpenLoop::imageWatchdogCallback,
+                this));
 
         cv::namedWindow(
             "ROS2 Auto Aim Open Loop",
@@ -119,6 +127,61 @@ public:
     }
 
 private:
+    void publishInvalidCommand()
+    {
+        if (!control_enabled_ || !has_gimbal_feedback_)
+        {
+            return;
+        }
+
+        rm_interfaces::msg::VisionSendData command;
+        command.header.stamp = this->now();
+        command.header.frame_id = "gimbal_link";
+        command.target_state = 0;
+        command.target_type = 0;
+        command.pitch = static_cast<float>(current_pitch_deg_);
+        command.yaw = static_cast<float>(current_yaw_deg_);
+        command.delta_pitch = 0.0F;
+        command.delta_yaw = 0.0F;
+        command.target_distance = -1.0F;
+        command.vel_x = 0.0F;
+        command.vel_y = 0.0F;
+        command.vel_yaw = 0.0F;
+        command.control_id = static_cast<float>(++control_id_);
+        vision_command_publisher_->publish(command);
+    }
+
+    void imageWatchdogCallback()
+    {
+        if (!control_enabled_ || !received_image_)
+        {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_image_time_)
+                .count();
+
+        if (elapsed_ms <= image_timeout_ms_)
+        {
+            image_timeout_active_ = false;
+            return;
+        }
+
+        if (!image_timeout_active_)
+        {
+            image_timeout_active_ = true;
+            RCLCPP_WARN(
+                get_logger(),
+                "Image timeout after %d ms; holding current gimbal pose.",
+                image_timeout_ms_);
+        }
+
+        publishInvalidCommand();
+    }
+
     void visionFeedbackCallback(
         const rm_interfaces::msg::VisionReceiveData::SharedPtr msg)
     {
@@ -245,6 +308,10 @@ private:
 
         const auto now =
             std::chrono::steady_clock::now();
+
+        received_image_ = true;
+        image_timeout_active_ = false;
+        last_image_time_ = now;
 
         const double elapsed =
             std::chrono::duration<double>(
@@ -393,12 +460,17 @@ private:
     double max_correction_deg_ = 2.0;
     double control_deadband_deg_ = 0.15;
     int command_period_ms_ = 50;
+    int image_timeout_ms_ = 200;
     double current_yaw_deg_ = 0.0;
     double current_pitch_deg_ = 0.0;
     std::uint32_t control_id_ = 0;
+    bool received_image_ = false;
+    bool image_timeout_active_ = false;
 
     std::chrono::steady_clock::time_point previous_time_;
     std::chrono::steady_clock::time_point last_command_time_{};
+    std::chrono::steady_clock::time_point last_image_time_{};
+    rclcpp::TimerBase::SharedPtr image_watchdog_timer_;
 };
 
 int main(int argc, char **argv)
