@@ -2,7 +2,7 @@
 
 一个基于 C++ 和 OpenCV 实现的简化装甲板自动瞄准系统。
 
-项目以测试视频作为输入，完成图像预处理、灯条检测、装甲板匹配、目标选择和 PnP 位姿解算，并在运行窗口中显示目标位置、Yaw、Pitch、距离、FPS 和目标状态。
+项目支持测试视频和 ROS2 仿真实时图像两种输入，完成图像预处理、灯条检测、装甲板匹配、目标选择和 PnP 位姿解算，并可将统一瞄准结果转换为仿真云台命令，形成安全限幅的最小闭环。
 
 当前项目主要用于完成自动瞄准视觉流程的基础实现，重点是建立完整、模块化且便于调试的处理流程。
 
@@ -16,6 +16,7 @@
 - [6. 当前不足](#6-当前不足)
 - [7. 通信模块](#7-通信模块)
 - [8. 问题记录与改进说明](#8-问题记录与改进说明)
+- [9. ROS2 仿真接入与最小闭环](#9-ros2-仿真接入与最小闭环)
 
 ---
 
@@ -106,7 +107,7 @@ Pitch
 Distance
 ```
 
-当前没有使用真实相机标定结果，而是根据图像尺寸构造近似相机内参，因此位姿数据主要用于验证完整的 PnP 解算流程，不能作为高精度测量结果。
+视频模式根据图像尺寸构造近似相机内参；ROS2 仿真模式使用与 1440×1080 仿真画面匹配的相机内参。
 
 ---
 
@@ -119,6 +120,7 @@ simplified-auto-aim-system/
 │   └── config.yaml
 ├── include/
 │   ├── video_reader.hpp
+│   ├── auto_aim_core.hpp
 │   ├── armor_detector.hpp
 │   ├── target_selector.hpp
 │   ├── pose_solver.hpp
@@ -126,6 +128,7 @@ simplified-auto-aim-system/
 │   └── config.hpp
 ├── src/
 │   ├── main.cpp
+│   ├── auto_aim_core.cpp
 │   ├── video_reader.cpp
 │   ├── armor_detector.cpp
 │   ├── target_selector.cpp
@@ -134,6 +137,10 @@ simplified-auto-aim-system/
 │   └── config.cpp
 ├── videos/
 │   └── test.mp4
+├── ros2/
+│   └── auto_aim_ros2/
+├── docs/
+│   └── simulator_interface.md
 └── output/
     └── result.avi
 ```
@@ -143,6 +150,7 @@ simplified-auto-aim-system/
 | 模块 | 作用 |
 | --- | --- |
 | `VideoReader` | 读取测试视频和视频 FPS |
+| `AutoAimCore` | 接收统一的 `cv::Mat`，执行检测、选板和 PnP，返回 `AimResult` |
 | `ArmorDetector` | 图像预处理、灯条筛选和装甲板匹配 |
 | `TargetSelector` | 目标选择、简单目标保持和状态管理 |
 | `PoseSolver` | solvePnP 位姿解算，计算 Yaw、Pitch 和距离 |
@@ -547,3 +555,106 @@ RX: A7 01 63 FF 58 02 02 66 | Yaw: 4.23 deg, Pitch: -1.57 deg, Distance: 600.00 
 - 进一步完善目标跟踪，减少短暂漏检对结果的影响；
 - 将当前的模拟 CAN 报文进一步接入实际串口或 CAN 设备；
 - 根据实际通信需求使用 CRC 等更可靠的校验方法。
+
+## 9. ROS2 仿真接入与最小闭环
+
+### 9.1 架构与职责
+
+两种输入模式共用同一个算法核心：
+
+```text
+视频文件 ── VideoReader ──┐
+                          ├─ cv::Mat → AutoAimCore → AimResult
+ROS2图像 ─ cv_bridge ─────┘                    ├─ 调试/UDP输出
+                                               └─ ROS2云台输出
+```
+
+- 输入层负责提供一帧 `cv::Mat`，实时输入队列深度为 1，避免积压旧帧。
+- `AutoAimCore` 只负责装甲检测、目标选择和 PnP，不依赖 ROS2 或 UDP。
+- `AimResult` 统一保存候选、最终目标、yaw、pitch、distance 和有效状态。
+- 输出适配层分别负责原调试/UDP输出和 ROS2 云台消息转换。
+
+### 9.2 环境与编译
+
+已验证环境为 Ubuntu 22.04、ROS2 Humble、OpenCV 4.5.4 和 C++17。
+先构建 `rm_interfaces` 与 ROS2 接入包：
+
+```bash
+cd ~/Projects/ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select rm_interfaces auto_aim_ros2
+source install/setup.bash
+```
+
+仿真器 ROS2 模式启动方法：
+
+```bash
+cd ~/Projects/bevy_robomaster_simulator
+source /opt/ros/humble/setup.bash
+source ~/Projects/ros2_ws/install/setup.bash
+cargo run --release --no-default-features --features ros2
+```
+
+### 9.3 模式切换
+
+原视频模式：
+
+```bash
+cd ~/Projects/simplified-auto-aim-system/build
+./auto_aim
+```
+
+ROS2 开环模式，只识别和显示，不控制云台：
+
+```bash
+ros2 run auto_aim_ros2 auto_aim_open_loop
+```
+
+ROS2 安全限幅闭环：
+
+```bash
+ros2 run auto_aim_ros2 auto_aim_open_loop --ros-args \
+  -p enable_control:=true \
+  -p max_correction_deg:=1.0
+```
+
+`enable_control` 默认为 `false`，因此普通启动不会自动转动云台。
+
+### 9.4 接口与控制语义
+
+| 方向 | 话题 | 类型 | 说明 |
+|---|---|---|---|
+| 仿真器 → 程序 | `/image_raw` | `sensor_msgs/msg/Image` | 1440×1080、rgb8、约 60 FPS |
+| 仿真器 → 程序 | `/vision_receive_data` | `rm_interfaces/msg/VisionReceiveData` | 当前云台绝对姿态，角度单位为度 |
+| 程序 → 仿真器 | `/vision_send_data` | `rm_interfaces/msg/VisionSendData` | 云台绝对目标角度，BEST_EFFORT |
+
+PnP 输出为目标相对画面中心的角度误差，仿真器接收绝对目标角度：
+
+```text
+目标绝对角度 = 当前云台角度 - 图像角度误差
+```
+
+闭环默认单次最多修正 2°，误差小于 0.15° 时不修正，命令约以
+17～20 Hz 发布。测试时使用 1° 限幅。
+
+### 9.5 异常行为与测试结果
+
+只有目标进入 `TRACKING` 且 PnP 成功后才发送 `target_state=1`。
+目标丢失或 PnP 失败时发送：
+
+```text
+target_state = 0
+target_distance = -1
+```
+
+同时发送当前 yaw、pitch，使云台保持当前位置，不持续使用过期结果。
+
+实测结果：图像接收约 59～60 FPS，视觉处理约 50～90 FPS，控制消息约
+17～20 Hz；静态目标能够从偏离中心逐步收敛并保持在中心附近。原视频模式
+回归测试正常。
+
+当前已知问题是相邻装甲板内侧灯条偶尔发生交叉配对，上方连续灯条也可能
+产生额外候选。最终目标选择基本可用，后续可增加数字分类与更严格的匹配约束。
+
+详细部署、接口、截图和排查记录见
+[`docs/simulator_interface.md`](docs/simulator_interface.md)。
