@@ -67,6 +67,7 @@ ament_target_dependencies(
 add_executable(
   auto_aim_open_loop
   src/auto_aim_open_loop.cpp
+  ${AUTO_AIM_ROOT}/src/auto_aim_core.cpp
   ${AUTO_AIM_ROOT}/src/armor_detector.cpp
   ${AUTO_AIM_ROOT}/src/target_selector.cpp
   ${AUTO_AIM_ROOT}/src/pose_solver.cpp

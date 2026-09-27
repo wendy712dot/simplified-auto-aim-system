@@ -18,10 +18,8 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
-#include "armor_detector.hpp"
+#include "auto_aim_core.hpp"
 #include "config.hpp"
-#include "pose_solver.hpp"
-#include "target_selector.hpp"
 
 class AutoAimOpenLoop : public rclcpp::Node
 {
@@ -52,18 +50,7 @@ public:
         config.camera.fy_scale =
             1303.675283386667 / 1440.0;
 
-        detector_ = std::make_unique<ArmorDetector>(
-            config.enemy,
-            config.preprocess,
-            config.light_bar,
-            config.armor);
-
-        selector_ = std::make_unique<TargetSelector>(
-            config.target);
-
-        pose_solver_ = std::make_unique<PoseSolver>(
-            config.camera,
-            config.armor_size);
+        auto_aim_ = std::make_unique<AutoAimCore>(config);
 
         control_enabled_ =
             declare_parameter<bool>("enable_control", false);
@@ -269,44 +256,17 @@ private:
         const double fps =
             elapsed > 0.0 ? 1.0 / elapsed : 0.0;
 
-        cv::Mat binary =
-            detector_->preprocess(frame);
-
-        const auto contours =
-            detector_->findContours(binary);
-
-        const auto rects =
-            detector_->getRotatedRects(contours);
-
-        const auto light_bars =
-            detector_->filterLightBars(rects);
-
-        const auto armors =
-            detector_->matchArmors(light_bars);
-
-        const TargetResult target =
-            selector_->select(
-                armors,
-                frame.size());
-
-        PoseResult pose;
-
-        if (target.valid)
-        {
-            pose = pose_solver_->solve(
-                target.armor,
-                frame.size());
-        }
+        AimResult aim_result = auto_aim_->process(frame);
 
         publishControlCommand(
-            target,
-            pose,
+            aim_result.target,
+            aim_result.pose,
             now);
 
         cv::Mat result = frame.clone();
 
         // 用绿色矩形显示通过筛选的灯条。
-        for (const auto &light : light_bars)
+        for (const auto &light : aim_result.light_bars)
         {
             cv::Point2f points[4];
             light.points(points);
@@ -322,7 +282,7 @@ private:
             }
         }
 
-        for (const auto &armor : armors)
+        for (const auto &armor : aim_result.armors)
         {
             cv::line(
                 result,
@@ -350,11 +310,11 @@ private:
                 2);
         }
 
-        if (target.valid)
+        if (aim_result.target.valid)
         {
             cv::drawMarker(
                 result,
-                target.armor.center,
+                aim_result.target.armor.center,
                 cv::Scalar(0, 0, 255),
                 cv::MARKER_CROSS,
                 30,
@@ -366,9 +326,9 @@ private:
             << std::fixed
             << std::setprecision(1)
             << "FPS: " << fps
-            << "  Rects: " << rects.size()
-            << "  Lights: " << light_bars.size()
-            << "  Armors: " << armors.size()
+            << "  Rects: " << aim_result.rects.size()
+            << "  Lights: " << aim_result.light_bars.size()
+            << "  Armors: " << aim_result.armors.size()
             << "  Control: "
             << (control_enabled_ ? "ON" : "OFF");
 
@@ -381,15 +341,15 @@ private:
             cv::Scalar(0, 255, 0),
             2);
 
-        if (pose.success)
+        if (aim_result.pose.success)
         {
             std::ostringstream pose_text;
             pose_text
                 << std::fixed
                 << std::setprecision(2)
-                << "Yaw: " << pose.yaw
-                << "  Pitch: " << pose.pitch
-                << "  Distance: " << pose.distance << " mm";
+                << "Yaw: " << aim_result.pose.yaw
+                << "  Pitch: " << aim_result.pose.pitch
+                << "  Distance: " << aim_result.pose.distance << " mm";
 
             cv::putText(
                 result,
@@ -407,7 +367,7 @@ private:
 
         cv::imshow(
             "ROS2 Auto Aim Binary",
-            binary);
+            aim_result.binary);
 
         const int key = cv::waitKey(1);
 
@@ -417,9 +377,7 @@ private:
         }
     }
 
-    std::unique_ptr<ArmorDetector> detector_;
-    std::unique_ptr<TargetSelector> selector_;
-    std::unique_ptr<PoseSolver> pose_solver_;
+    std::unique_ptr<AutoAimCore> auto_aim_;
 
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr
         image_subscription_;

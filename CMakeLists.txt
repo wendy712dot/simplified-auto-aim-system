@@ -12,6 +12,7 @@ find_package(OpenCV REQUIRED)
 add_executable(
     auto_aim
     src/main.cpp
+    src/auto_aim_core.cpp
     src/video_reader.cpp
     src/armor_detector.cpp
     src/pose_solver.cpp
