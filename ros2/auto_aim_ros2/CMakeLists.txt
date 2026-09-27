@@ -79,6 +79,7 @@ ament_target_dependencies(
   sensor_msgs
   cv_bridge
   ament_index_cpp
+  rm_interfaces
 )
 
 target_include_directories(

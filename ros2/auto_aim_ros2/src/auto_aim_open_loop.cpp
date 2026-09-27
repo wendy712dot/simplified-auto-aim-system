@@ -1,4 +1,7 @@
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <functional>
 #include <iomanip>
 #include <memory>
@@ -10,6 +13,8 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rm_interfaces/msg/vision_receive_data.hpp>
+#include <rm_interfaces/msg/vision_send_data.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
@@ -60,11 +65,20 @@ public:
             config.camera,
             config.armor_size);
 
+        control_enabled_ =
+            declare_parameter<bool>("enable_control", false);
+        max_correction_deg_ =
+            declare_parameter<double>("max_correction_deg", 2.0);
+        control_deadband_deg_ =
+            declare_parameter<double>("control_deadband_deg", 0.15);
+        command_period_ms_ =
+            declare_parameter<int>("command_period_ms", 50);
+
         rclcpp::QoS qos(rclcpp::KeepLast(1));
         qos.reliable();
         qos.durability_volatile();
 
-        subscription_ =
+        image_subscription_ =
             create_subscription<sensor_msgs::msg::Image>(
                 "/image_raw",
                 qos,
@@ -72,6 +86,21 @@ public:
                     &AutoAimOpenLoop::imageCallback,
                     this,
                     std::placeholders::_1));
+
+        // 仿真器以 BEST_EFFORT 发布和接收视觉控制消息。
+        vision_feedback_subscription_ =
+            create_subscription<rm_interfaces::msg::VisionReceiveData>(
+                "/vision_receive_data",
+                rclcpp::SensorDataQoS().keep_last(1),
+                std::bind(
+                    &AutoAimOpenLoop::visionFeedbackCallback,
+                    this,
+                    std::placeholders::_1));
+
+        vision_command_publisher_ =
+            create_publisher<rm_interfaces::msg::VisionSendData>(
+                "/vision_send_data",
+                rclcpp::SensorDataQoS().keep_last(1));
 
         cv::namedWindow(
             "ROS2 Auto Aim Open Loop",
@@ -93,7 +122,8 @@ public:
 
         RCLCPP_INFO(
             get_logger(),
-            "Waiting for simulator images on /image_raw...");
+            "Waiting for simulator images on /image_raw; control=%s",
+            control_enabled_ ? "ON" : "OFF");
     }
 
     ~AutoAimOpenLoop() override
@@ -102,6 +132,104 @@ public:
     }
 
 private:
+    void visionFeedbackCallback(
+        const rm_interfaces::msg::VisionReceiveData::SharedPtr msg)
+    {
+        current_yaw_deg_ = msg->yaw;
+        current_pitch_deg_ = msg->pitch;
+        has_gimbal_feedback_ = true;
+    }
+
+    double limitedCorrection(double error_deg) const
+    {
+        if (std::abs(error_deg) < control_deadband_deg_)
+        {
+            return 0.0;
+        }
+
+        return std::max(
+            -max_correction_deg_,
+            std::min(max_correction_deg_, error_deg));
+    }
+
+    void publishControlCommand(
+        const TargetResult& target,
+        const PoseResult& pose,
+        const std::chrono::steady_clock::time_point& now)
+    {
+        if (!control_enabled_)
+        {
+            return;
+        }
+
+        if (!has_gimbal_feedback_)
+        {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                2000,
+                "Control enabled, but no /vision_receive_data received.");
+            return;
+        }
+
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_command_time_)
+                .count();
+
+        if (elapsed_ms < command_period_ms_)
+        {
+            return;
+        }
+
+        last_command_time_ = now;
+
+        rm_interfaces::msg::VisionSendData command;
+        command.header.stamp = this->now();
+        command.header.frame_id = "gimbal_link";
+        command.target_type = 0;
+        command.delta_pitch = 0.0F;
+        command.delta_yaw = 0.0F;
+        command.vel_x = 0.0F;
+        command.vel_y = 0.0F;
+        command.vel_yaw = 0.0F;
+        command.control_id =
+            static_cast<float>(++control_id_);
+
+        const bool valid_target =
+            target.valid &&
+            target.status == TargetStatus::TRACKING &&
+            pose.success;
+
+        if (valid_target)
+        {
+            // PoseSolver 输出的是相机画面内的相对误差；仿真器接收
+            // 世界坐标系绝对角度，且其正方向与图像误差方向相反。
+            const double yaw_correction =
+                limitedCorrection(pose.yaw);
+            const double pitch_correction =
+                limitedCorrection(pose.pitch);
+
+            command.target_state = 1;
+            command.yaw = static_cast<float>(
+                current_yaw_deg_ - yaw_correction);
+            command.pitch = static_cast<float>(
+                current_pitch_deg_ - pitch_correction);
+            command.target_distance = static_cast<float>(
+                pose.distance / 1000.0);
+        }
+        else
+        {
+            // 无可靠目标时发送无效状态，并保持当前姿态。
+            command.target_state = 0;
+            command.yaw = static_cast<float>(current_yaw_deg_);
+            command.pitch = static_cast<float>(current_pitch_deg_);
+            command.target_distance = -1.0F;
+        }
+
+        vision_command_publisher_->publish(command);
+    }
+
     void imageCallback(
         const sensor_msgs::msg::Image::ConstSharedPtr msg)
     {
@@ -170,6 +298,11 @@ private:
                 frame.size());
         }
 
+        publishControlCommand(
+            target,
+            pose,
+            now);
+
         cv::Mat result = frame.clone();
 
         // 用绿色矩形显示通过筛选的灯条。
@@ -235,7 +368,9 @@ private:
             << "FPS: " << fps
             << "  Rects: " << rects.size()
             << "  Lights: " << light_bars.size()
-            << "  Armors: " << armors.size();
+            << "  Armors: " << armors.size()
+            << "  Control: "
+            << (control_enabled_ ? "ON" : "OFF");
 
         cv::putText(
             result,
@@ -286,10 +421,26 @@ private:
     std::unique_ptr<TargetSelector> selector_;
     std::unique_ptr<PoseSolver> pose_solver_;
 
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr
+        image_subscription_;
     rclcpp::Subscription<
-        sensor_msgs::msg::Image>::SharedPtr subscription_;
+        rm_interfaces::msg::VisionReceiveData>::SharedPtr
+        vision_feedback_subscription_;
+    rclcpp::Publisher<
+        rm_interfaces::msg::VisionSendData>::SharedPtr
+        vision_command_publisher_;
+
+    bool control_enabled_ = false;
+    bool has_gimbal_feedback_ = false;
+    double max_correction_deg_ = 2.0;
+    double control_deadband_deg_ = 0.15;
+    int command_period_ms_ = 50;
+    double current_yaw_deg_ = 0.0;
+    double current_pitch_deg_ = 0.0;
+    std::uint32_t control_id_ = 0;
 
     std::chrono::steady_clock::time_point previous_time_;
+    std::chrono::steady_clock::time_point last_command_time_{};
 };
 
 int main(int argc, char **argv)
