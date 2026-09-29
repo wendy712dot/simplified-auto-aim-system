@@ -8,12 +8,12 @@
 
 ## 目录
 
-- [1. 项目简介](#1-项目简介)
+- [1. 实现流程](#1-实现流程)
 - [2. 项目结构](#2-项目结构)
-- [3. 环境配置与运行](#3-环境配置与运行)
+- [3. 编译与运行](#3-编译与运行)
 - [4. 参数配置](#4-参数配置)
-- [5. 运行效果](#5-运行效果)
-- [6. 当前不足](#6-当前不足)
+- [5. 调试与输出](#5-调试与输出)
+- [6. 当前效果与不足](#6-当前效果与不足)
 - [7. 通信模块](#7-通信模块)
 - [8. 问题记录与改进说明](#8-问题记录与改进说明)
 - [9. ROS2 仿真接入与最小闭环](#9-ros2-仿真接入与最小闭环)
@@ -25,7 +25,11 @@
 程序整体处理流程如下：
 
 ```text
-读取视频
+视频文件 ── VideoReader ──┐
+                          ├─ cv::Mat
+ROS2 图像 ─ cv_bridge ────┘
+   ↓
+AutoAimCore
    ↓
 图像预处理
    ↓
@@ -43,7 +47,9 @@ solvePnP 位姿解算
    ↓
 计算 Yaw / Pitch / Distance
    ↓
-显示并保存结果
+生成统一 AimResult
+   ├─ 显示、保存视频和 UDP 输出
+   └─ ROS2 安全限幅云台控制
 ```
 
 ### 图像预处理
@@ -119,30 +125,50 @@ simplified-auto-aim-system/
 ├── config/
 │   └── config.yaml
 ├── include/
-│   ├── video_reader.hpp
 │   ├── auto_aim_core.hpp
 │   ├── armor_detector.hpp
-│   ├── target_selector.hpp
-│   ├── pose_solver.hpp
+│   ├── communication.hpp
+│   ├── config.hpp
 │   ├── debug_visualizer.hpp
-│   └── config.hpp
+│   ├── pose_solver.hpp
+│   ├── target_selector.hpp
+│   ├── udp_sender.hpp
+│   └── video_reader.hpp
 ├── src/
-│   ├── main.cpp
 │   ├── auto_aim_core.cpp
-│   ├── video_reader.cpp
 │   ├── armor_detector.cpp
-│   ├── target_selector.cpp
-│   ├── pose_solver.cpp
+│   ├── communication.cpp
+│   ├── communication_test.cpp
+│   ├── config.cpp
 │   ├── debug_visualizer.cpp
-│   └── config.cpp
+│   ├── main.cpp
+│   ├── pose_solver.cpp
+│   ├── target_selector.cpp
+│   ├── udp_receiver.cpp
+│   ├── udp_sender.cpp
+│   ├── udp_sender_class.cpp
+│   └── video_reader.cpp
 ├── videos/
 │   └── test.mp4
 ├── ros2/
 │   └── auto_aim_ros2/
+│       ├── CMakeLists.txt
+│       ├── package.xml
+│       └── src/
+│           ├── image_subscriber_test.cpp
+│           ├── gimbal_command_test.cpp
+│           └── auto_aim_open_loop.cpp
 ├── docs/
+│   ├── images/
+│   ├── videos/
+│   │   └── closed_loop_demo.webm
 │   └── simulator_interface.md
 └── output/
-    └── result.avi
+    ├── result.avi
+    ├── result.mp4
+    ├── result.png
+    ├── stage2_udp_result.png
+    └── stage2_udp_result1.webm
 ```
 
 各模块职责如下：
@@ -156,6 +182,9 @@ simplified-auto-aim-system/
 | `PoseSolver` | solvePnP 位姿解算，计算 Yaw、Pitch 和距离 |
 | `DebugVisualizer` | 显示中间结果、最终结果并保存输出视频 |
 | `Config` | 从 YAML 文件读取检测和调试参数 |
+| `Communication` | 将瞄准结果编码为固定 8 字节报文并完成校验 |
+| `UdpSender` / `udp_receiver` | 在本机模拟视觉端与下位机之间的数据传输 |
+| `auto_aim_ros2` | 订阅仿真图像、复用算法核心并发布云台控制命令 |
 
 `main.cpp` 只负责组织各模块的调用，不直接实现具体的检测算法。
 
@@ -170,6 +199,7 @@ Ubuntu 22.04
 C++17
 OpenCV 4.5.4
 CMake
+ROS2 Humble（仅 ROS2 仿真模式需要）
 ```
 
 进入项目目录并编译：
@@ -280,7 +310,7 @@ Auto Aim Result
 
 视频记录了装甲板检测、目标选择、位姿解算以及目标状态变化的完整过程。
 
-由于ubuntu好像不支持直接播放 mp4 格式的视频所以根据 gpt 的推荐，保存为 avi 格式。
+项目同时保留 AVI 和 MP4 结果；如果浏览器不能直接预览，可下载后使用本地播放器打开。
 
 也可以将以下 mp4 下载到本地看效果：
 
@@ -491,7 +521,7 @@ RX: A7 01 63 FF 58 02 02 66 | Yaw: 4.23 deg, Pitch: -1.57 deg, Distance: 600.00 
 
 也可以将以下视频下载到本地观看：
 
-[`output/stage2_udp_result1.mp4`](output/stage2_udp_result1.mp4)
+[`output/stage2_udp_result1.webm`](output/stage2_udp_result1.webm)
 
 运行过程中，视觉端可以正常识别和跟踪装甲板，UDP 接收端能够持续收到对应的 8 字节数据。解码得到的 yaw、pitch、distance 和目标状态会随视觉检测结果变化，正常情况下 checksum 显示为 `OK`。
 
@@ -615,7 +645,7 @@ ROS2 安全限幅闭环：
 ```bash
 ros2 run auto_aim_ros2 auto_aim_open_loop --ros-args \
   -p enable_control:=true \
-  -p max_correction_deg:=1.0
+  -p max_correction_deg:=2.0
 ```
 
 `enable_control` 默认为 `false`，因此普通启动不会自动转动云台。
@@ -634,8 +664,8 @@ PnP 输出为目标相对画面中心的角度误差，仿真器接收绝对目�
 目标绝对角度 = 当前云台角度 - 图像角度误差
 ```
 
-闭环默认单次最多修正 2°，误差小于 0.15° 时不修正，命令约以
-17～20 Hz 发布。测试时使用 1° 限幅。
+闭环默认单次最多修正 2°，误差小于 0.15° 时不修正，命令周期配置为
+50 ms；受图像处理耗时影响，实测控制消息约以 17～20 Hz 发布。本项目最终测试使用 2° 限幅。
 
 ### 9.5 异常行为与测试结果
 
@@ -649,6 +679,9 @@ target_distance = -1
 
 同时发送当前 yaw、pitch，使云台保持当前位置，不持续使用过期结果。
 
+如果超过 200 ms 没有收到新图像，看门狗同样发布无效目标并保持当前云台
+姿态；图像恢复后自动继续处理。超时时间可通过 `image_timeout_ms` 参数调整。
+
 实测结果：图像接收约 59～60 FPS，视觉处理约 50～90 FPS，控制消息约
 17～20 Hz；静态目标能够从偏离中心逐步收敛并保持在中心附近。原视频模式
 回归测试正常。
@@ -658,3 +691,9 @@ target_distance = -1
 
 详细部署、接口、截图和排查记录见
 [`docs/simulator_interface.md`](docs/simulator_interface.md)。
+
+### 9.6 闭环演示
+
+[查看 ROS2 安全限幅云台闭环演示](docs/videos/closed_loop_demo.webm)
+
+视频展示了实时目标识别、云台闭环修正以及运动过程中的持续跟踪。
