@@ -39,6 +39,13 @@ fix/ros2-interface-compatibility
 feature/simulator-integration
 ```
 
+最终版本：
+
+```text
+main
+sim-closed-loop-v1
+```
+
 ---
 
 ## 2. 仿真器启动
@@ -278,12 +285,12 @@ C++程序 → ROS2 → 仿真器云台
 ros2 run auto_aim_ros2 auto_aim_open_loop
 ```
 
-显式开启闭环，并将单次角度修正限制为 1°：
+显式开启闭环，并将单次角度修正限制为 2°：
 
 ```bash
 ros2 run auto_aim_ros2 auto_aim_open_loop --ros-args \
   -p enable_control:=true \
-  -p max_correction_deg:=1.0
+  -p max_correction_deg:=2.0
 ```
 
 识别算法输出相对画面中心的角度误差，结合
@@ -297,7 +304,7 @@ ros2 run auto_aim_ros2 auto_aim_open_loop --ros-args \
 
 - 控制默认关闭，必须通过参数显式开启。
 - 目标进入 `TRACKING` 且 PnP 成功后才发送有效命令。
-- 单次角度修正默认不超过 2°，测试时限制为 1°。
+- 单次角度修正默认不超过 2°，最终测试使用 2° 限幅。
 - 误差小于 0.15° 时不修正，减少中心附近抖动。
 - 控制命令约以 17～20 Hz 发布。
 - 目标丢失时发送 `target_state=0`、`target_distance=-1`，并保持当前姿态。
@@ -384,6 +391,10 @@ ros2 run auto_aim_ros2 auto_aim_open_loop --ros-args \
 [查看安全限幅云台闭环演示](videos/closed_loop_demo.webm)
 
 视频展示了目标识别、云台闭环修正和运动过程中的持续跟踪。
+
+[查看目标丢失保护演示](videos/target_loss_demo.webm)
+
+补充视频展示了目标离开视野后的无效目标输出和云台保持行为。
 
 ## 已知问题
 

@@ -697,3 +697,7 @@ target_distance = -1
 [查看 ROS2 安全限幅云台闭环演示](docs/videos/closed_loop_demo.webm)
 
 视频展示了实时目标识别、云台闭环修正以及运动过程中的持续跟踪。
+
+[查看目标丢失保护演示](docs/videos/target_loss_demo.webm)
+
+补充视频展示了目标离开视野后，系统发布无效目标并保持当前云台姿态。
