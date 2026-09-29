@@ -4,11 +4,9 @@
 
 #include <opencv2/opencv.hpp>
 
+#include "auto_aim_core.hpp"
 #include "video_reader.hpp"
-#include "armor_detector.hpp"
-#include "pose_solver.hpp"
 #include "config.hpp"
-#include "target_selector.hpp"
 #include "debug_visualizer.hpp"
 #include "communication.hpp"
 #include "udp_sender.hpp"
@@ -47,22 +45,8 @@ int main()
     }
 
 
-    // 2. 创建各功能模块
-    ArmorDetector detector(
-        config.enemy,
-        config.preprocess,
-        config.light_bar,
-        config.armor
-    );
-
-    TargetSelector selector(
-        config.target
-    );
-
-    PoseSolver pose_solver(
-        config.camera,
-        config.armor_size
-    );
+    // 2. 创建统一自瞄核心和输出模块
+    AutoAimCore auto_aim(config);
 
     DebugVisualizer visualizer(
         config.debug,
@@ -132,58 +116,8 @@ int main()
         }
 
 
-        // 装甲板检测
-        cv::Mat binary =
-            detector.preprocess(
-                frame
-            );
-
-        auto contours =
-            detector.findContours(
-                binary
-            );
-
-        auto rects =
-            detector.getRotatedRects(
-                contours
-            );
-
-        auto light_bars =
-            detector.filterLightBars(
-                rects
-            );
-
-        auto armors =
-            detector.matchArmors(
-                light_bars
-            );
-
-
-        // 目标选择
-        TargetResult target =
-            selector.select(
-                armors,
-                frame.size()
-            );
-
-
-        // 位姿解算
-        PoseResult pose;
-        bool pose_valid = false;
-
-        if (target.valid)
-        {
-            pose =
-                pose_solver.solve(
-                    target.armor,
-                    frame.size()
-                );
-
-            if (pose.success)
-            {
-                pose_valid = true;
-            }
-        }
+        // 输入层统一提供 cv::Mat；核心算法统一返回 AimResult。
+        AimResult aim_result = auto_aim.process(frame);
 
 
         // 通信编码与模拟接收
@@ -191,11 +125,11 @@ int main()
         double send_pitch = 0.0;
         double send_distance = 0.0;
 
-        if (pose_valid)
+        if (aim_result.target_valid)
         {
-            send_yaw = pose.yaw;
-            send_pitch = pose.pitch;
-            send_distance = pose.distance;
+            send_yaw = aim_result.pose.yaw;
+            send_pitch = aim_result.pose.pitch;
+            send_distance = aim_result.pose.distance;
         }
 
         CanFrame tx_frame =
@@ -203,7 +137,7 @@ int main()
                 send_yaw,
                 send_pitch,
                 send_distance,
-                target.status
+                aim_result.target.status
             );
 
         if (!udp_sender.send(tx_frame))
@@ -286,13 +220,13 @@ int main()
         // 调试显示
         visualizer.show(
             frame,
-            binary,
-            rects,
-            light_bars,
-            armors,
-            target,
-            pose,
-            pose_valid,
+            aim_result.binary,
+            aim_result.rects,
+            aim_result.light_bars,
+            aim_result.armors,
+            aim_result.target,
+            aim_result.pose,
+            aim_result.target_valid,
             fps
         );
 

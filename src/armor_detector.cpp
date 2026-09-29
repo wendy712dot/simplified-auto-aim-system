@@ -399,214 +399,191 @@ ArmorDetector::matchArmors(
 {
     std::vector<Armor> armors;
 
-    // 至少需要两根灯条才能组成装甲板
     if (light_bars.size() < 2)
     {
         return armors;
     }
 
+    struct PairCandidate
+    {
+        size_t first;
+        size_t second;
+        float score;
+    };
 
-    // ========================================================
-    // 将所有灯条两两组合
-    // ========================================================
+    std::vector<PairCandidate> candidates;
 
+    // 将 RotatedRect 的长轴角度统一到 0~90 度。
+    auto longAxisAngle = [](const cv::RotatedRect& light)
+    {
+        float angle = light.angle;
+
+        if (light.size.width < light.size.height)
+        {
+            angle += 90.0f;
+        }
+
+        while (angle < 0.0f)
+        {
+            angle += 180.0f;
+        }
+
+        while (angle >= 180.0f)
+        {
+            angle -= 180.0f;
+        }
+
+        if (angle > 90.0f)
+        {
+            angle = 180.0f - angle;
+        }
+
+        return angle;
+    };
+
+    constexpr float max_angle_difference = 15.0f;
+
+    auto makeArmor = [this](
+        const cv::RotatedRect& light1,
+        const cv::RotatedRect& light2)
+    {
+        Armor armor;
+
+        if (light1.center.x < light2.center.x)
+        {
+            armor.left_light = light1;
+            armor.right_light = light2;
+        }
+        else
+        {
+            armor.left_light = light2;
+            armor.right_light = light1;
+        }
+
+        armor.center =
+            (armor.left_light.center + armor.right_light.center) * 0.5f;
+
+        getLightEndpoints(
+            armor.left_light,
+            armor.left_top,
+            armor.left_bottom);
+        getLightEndpoints(
+            armor.right_light,
+            armor.right_top,
+            armor.right_bottom);
+
+        return armor;
+    };
+
+    // 由原有允许范围推导一个优选间距，不改变原来的硬性上下限。
+    const float preferred_aspect_ratio = std::sqrt(
+        static_cast<float>(
+            armor_config_.min_armor_aspect_ratio *
+            armor_config_.max_armor_aspect_ratio));
+
+    // 先生成满足硬性几何约束的候选，并为每一对计算匹配分数。
     for (size_t i = 0; i < light_bars.size(); ++i)
     {
-        for (size_t j = i + 1;
-             j < light_bars.size();
-             ++j)
+        for (size_t j = i + 1; j < light_bars.size(); ++j)
         {
-            const auto& light1 =
-                light_bars[i];
+            const auto& light1 = light_bars[i];
+            const auto& light2 = light_bars[j];
 
-            const auto& light2 =
-                light_bars[j];
+            const float height1 = std::max(
+                light1.size.width,
+                light1.size.height);
+            const float height2 = std::max(
+                light2.size.width,
+                light2.size.height);
 
-
-            // ------------------------------------------------
-            // 1. 两根灯条中心位置
-            // ------------------------------------------------
-
-            const cv::Point2f& center1 =
-                light1.center;
-
-            const cv::Point2f& center2 =
-                light2.center;
-
-
-            float delta_x =
-                std::abs(
-                    center1.x - center2.x
-                );
-
-            float delta_y =
-                std::abs(
-                    center1.y - center2.y
-                );
-
-
-            // ------------------------------------------------
-            // 2. 获取两根灯条长度
-            // ------------------------------------------------
-
-            float height1 =
-                std::max(
-                    light1.size.width,
-                    light1.size.height
-                );
-
-            float height2 =
-                std::max(
-                    light2.size.width,
-                    light2.size.height
-                );
-
-
-            // ------------------------------------------------
-            // 3. 灯条长度比
-            // ------------------------------------------------
-
-            float max_height =
-                std::max(
-                    height1,
-                    height2
-                );
-
-            float min_height =
-                std::min(
-                    height1,
-                    height2
-                );
+            const float min_height = std::min(height1, height2);
+            const float max_height = std::max(height1, height2);
 
             if (min_height <= 0.0f)
             {
                 continue;
             }
 
+            const float height_ratio = max_height / min_height;
 
-            float height_ratio =
-                max_height / min_height;
-
-
-            if (
-                height_ratio >
-                armor_config_.max_height_ratio
-            )
+            if (height_ratio > armor_config_.max_height_ratio)
             {
                 continue;
             }
 
+            const float average_height = (height1 + height2) * 0.5f;
+            const float delta_x = std::abs(
+                light1.center.x - light2.center.x);
+            const float delta_y = std::abs(
+                light1.center.y - light2.center.y);
+            const float y_ratio = delta_y / average_height;
+            const float armor_aspect_ratio = delta_x / average_height;
 
-            // ------------------------------------------------
-            // 4. 平均灯条长度
-            // ------------------------------------------------
-
-            float average_height =
-                (height1 + height2) /
-                2.0f;
-
-            if (average_height <= 0.0f)
+            if (y_ratio > armor_config_.max_y_ratio)
             {
                 continue;
             }
-
-
-            // ------------------------------------------------
-            // 5. 归一化竖直位置差
-            // ------------------------------------------------
-
-            float y_ratio =
-                delta_y / average_height;
-
-
-            if (
-                y_ratio >
-                armor_config_.max_y_ratio
-            )
-            {
-                continue;
-            }
-
-
-            // ------------------------------------------------
-            // 6. 装甲板近似宽高比
-            // ------------------------------------------------
-
-            float armor_aspect_ratio =
-                delta_x / average_height;
-
 
             if (
                 armor_aspect_ratio <
                     armor_config_.min_armor_aspect_ratio ||
                 armor_aspect_ratio >
-                    armor_config_.max_armor_aspect_ratio
-            )
+                    armor_config_.max_armor_aspect_ratio)
             {
                 continue;
             }
 
+            const float angle_difference = std::abs(
+                longAxisAngle(light1) - longAxisAngle(light2));
 
-            // ------------------------------------------------
-            // 7. 构造 Armor
-            // ------------------------------------------------
-
-            Armor armor;
-
-
-            // 保证 left_light 真正在图像左侧
-            if (light1.center.x < light2.center.x)
+            if (angle_difference > max_angle_difference)
             {
-                armor.left_light =
-                    light1;
-
-                armor.right_light =
-                    light2;
-            }
-            else
-            {
-                armor.left_light =
-                    light2;
-
-                armor.right_light =
-                    light1;
+                continue;
             }
 
+            // 分数越低越合理：优先高度接近、水平对齐、方向平行，
+            // 且灯条间距接近期望装甲比例的组合。
+            const float score =
+                2.0f * (height_ratio - 1.0f) +
+                2.0f * y_ratio +
+                angle_difference / max_angle_difference +
+                std::abs(
+                    armor_aspect_ratio - preferred_aspect_ratio) /
+                    preferred_aspect_ratio;
 
-            // ------------------------------------------------
-            // 8. 计算装甲板中心
-            // ------------------------------------------------
-
-            armor.center =
-                (
-                    armor.left_light.center +
-                    armor.right_light.center
-                ) * 0.5f;
-
-
-            // ------------------------------------------------
-            // 9. 获取左右灯条上下端点
-            // ------------------------------------------------
-
-            getLightEndpoints(
-                armor.left_light,
-                armor.left_top,
-                armor.left_bottom
-            );
-
-            getLightEndpoints(
-                armor.right_light,
-                armor.right_top,
-                armor.right_bottom
-            );
-
-
-            // ------------------------------------------------
-            // 10. 保存装甲板候选
-            // ------------------------------------------------
-
-            armors.push_back(armor);
+            candidates.push_back({i, j, score});
         }
+    }
+
+    std::sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const PairCandidate& lhs, const PairCandidate& rhs)
+        {
+            return lhs.score < rhs.score;
+        });
+
+    // 按得分从好到坏进行一对一匹配。
+    // 一根灯条一旦被采用，就不能再与其他灯条组成交叉候选。
+    std::vector<bool> light_used(light_bars.size(), false);
+
+    for (const auto& candidate : candidates)
+    {
+        if (
+            light_used[candidate.first] ||
+            light_used[candidate.second])
+        {
+            continue;
+        }
+
+        const auto& light1 = light_bars[candidate.first];
+        const auto& light2 = light_bars[candidate.second];
+
+        Armor armor = makeArmor(light1, light2);
+
+        armors.push_back(armor);
+        light_used[candidate.first] = true;
+        light_used[candidate.second] = true;
     }
 
     return armors;
